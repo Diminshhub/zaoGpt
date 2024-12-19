@@ -1,10 +1,10 @@
 import { readFileSync, mkdirSync, writeFileSync} from 'fs';
 import { Examples } from '../utils/examples.js';
 import { getCommandDocs } from './commands/index.js';
-import { getSkillDocs } from './library/index.js';
+// import { getSkillDocs } from './library/index.js';
 import { stringifyTurns } from '../utils/text.js';
 import { getCommand } from './commands/index.js';
-
+import settings from '../../settings.js';
 import { Gemini } from '../models/gemini.js';
 import { GPT } from '../models/gpt.js';
 import { Claude } from '../models/claude.js';
@@ -15,6 +15,8 @@ import { GroqCloudAPI } from '../models/groq.js';
 import { HuggingFace } from '../models/huggingface.js';
 import { Qwen } from "../models/qwen.js";
 import { Grok } from "../models/grok.js";
+// import {cosineSimilarity} from "../utils/math.js";
+import {SkillLibrary} from "./library/skill_library.js";
 
 export class Prompter {
     constructor(agent, fp) {
@@ -29,7 +31,8 @@ export class Prompter {
 
         this.convo_examples = null;
         this.coding_examples = null;
-        
+
+
         let name = this.profile.name;
         let chat = this.profile.model;
         this.cooldown = this.profile.cooldown ? this.profile.cooldown : 0;
@@ -123,7 +126,7 @@ export class Prompter {
             console.log('Continuing anyway, using word overlap instead.');
             this.embedding_model = null;
         }
-
+        this.skill_libary = new SkillLibrary(agent, this.embedding_model);
         mkdirSync(`./bots/${name}`, { recursive: true });
         writeFileSync(`./bots/${name}/last_profile.json`, JSON.stringify(this.profile, null, 4), (err) => {
             if (err) {
@@ -149,7 +152,8 @@ export class Prompter {
             // Wait for both examples to load before proceeding
             await Promise.all([
                 this.convo_examples.load(this.profile.conversation_examples),
-                this.coding_examples.load(this.profile.coding_examples)
+                this.coding_examples.load(this.profile.coding_examples),
+                this.skill_libary.initSkillLibrary()
             ]);
 
             console.log('Examples initialized.');
@@ -158,7 +162,6 @@ export class Prompter {
             throw error;
         }
     }
-
     async replaceStrings(prompt, messages, examples=null, to_summarize=[], last_goals=null) {
         prompt = prompt.replaceAll('$NAME', this.agent.name);
 
@@ -175,8 +178,16 @@ export class Prompter {
         }
         if (prompt.includes('$COMMAND_DOCS'))
             prompt = prompt.replaceAll('$COMMAND_DOCS', getCommandDocs(this.agent.blocked_actions));
-        if (prompt.includes('$CODE_DOCS'))
-            prompt = prompt.replaceAll('$CODE_DOCS', getSkillDocs());
+        if (prompt.includes('$CODE_DOCS')) {
+            const code_task_content = messages.slice().reverse().find(msg =>
+                msg.role !== 'system' && msg.content.includes('!newAction(')
+            )?.content?.match(/!newAction\((.*?)\)/)?.[1] || '';
+
+            prompt = prompt.replaceAll(
+                '$CODE_DOCS',
+                await this.skill_libary.getRelevantSkillDocs(code_task_content, settings.relevant_docs_count)
+            );
+        }
         if (prompt.includes('$EXAMPLES') && examples !== null)
             prompt = prompt.replaceAll('$EXAMPLES', await examples.createExampleMessage(messages));
         if (prompt.includes('$MEMORY'))
